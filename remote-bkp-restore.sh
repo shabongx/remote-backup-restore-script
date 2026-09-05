@@ -88,6 +88,8 @@ read_list_entries() {
 print_usage() {
     cat <<EOF
 Usage: $SCRIPT_NAME [--dry-run] <server_list_file> <parent_folder_list_file> <backup|restore>
+    $SCRIPT_NAME [--dry-run] <server_list_file> <parent_folder_list_file> create-test-folders-files
+    $SCRIPT_NAME -test <server_list_file>
        $SCRIPT_NAME --help
        $SCRIPT_NAME help
 
@@ -97,11 +99,15 @@ Options:
   server_list_file       File containing remote server names/addresses (one per line)
   parent_folder_list_file File containing folder paths to back up or restore (one per line)
   backup|restore         Operation to perform
+    -test                  Run full end-to-end test (ssh, create, backup, restore) on servers
 
 Examples:
   $SCRIPT_NAME servers.txt folders.txt backup
   $SCRIPT_NAME servers.txt folders.txt restore
   $SCRIPT_NAME --dry-run servers.txt folders.txt backup
+    $SCRIPT_NAME servers.txt folders.txt create-test-folders-files
+    $SCRIPT_NAME --dry-run servers.txt folders.txt create-test-folders-files
+    $SCRIPT_NAME -test servers.txt
 EOF
 }
 
@@ -210,6 +216,82 @@ printf 'Restore completed successfully on %s\n' "$(hostname)"
 REMOTE
 }
 
+remote_create_test_folders_files() {
+    local server="$1"
+    local target_path="$2"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        log_message "DRY RUN: Would create test folders/files at '$target_path' on $server"
+        return 0
+    fi
+
+    ssh "${SSH_OPTS[@]}" "$server" bash -s -- "$target_path" <<'REMOTE'
+set -Eeuo pipefail
+
+target_path="$1"
+
+if [[ -e "$target_path" ]]; then
+    echo "Warning: Path '$target_path' already exists on $(hostname), skipping creation"
+    exit 0
+fi
+
+parent_dir="$(dirname -- "$target_path")"
+mkdir -p -- "$parent_dir"
+
+if [[ "$target_path" == */ ]]; then
+    # Create as directory
+    mkdir -p -- "$target_path"
+    printf 'Created test folder: %s\n' "$target_path"
+    touch -- "$target_path/test_file_1.txt"
+    echo "Test file 1" > "$target_path/test_file_1.txt"
+    touch -- "$target_path/test_file_2.txt"
+    echo "Test file 2" > "$target_path/test_file_2.txt"
+    mkdir -p -- "$target_path/subfolder"
+    echo "Nested test file" > "$target_path/subfolder/nested.txt"
+else
+    # Create as file
+    printf 'Created test file: %s\n' "$target_path"
+    echo "Test content for $target_path" > "$target_path"
+fi
+
+printf 'Test folders/files created successfully on %s\n' "$(hostname)"
+REMOTE
+}
+
+remote_run_test_sequence() {
+    local server="$1"
+    local testbase="/tmp/remote_bkp_test_${TIMESTAMP}"
+    ssh "${SSH_OPTS[@]}" "$server" bash -s -- "$testbase" <<'REMOTE'
+set -Eeuo pipefail
+
+testbase="$1"
+mkdir -p -- "$testbase"
+testdir="$testbase/testdir/"
+testfile="$testdir/test.txt"
+
+# create test files
+mkdir -p -- "$testdir"
+echo "hello" > "$testfile"
+
+# perform backup
+backup_suffix="_backup_test"
+cp -a -- "$testdir" "${testdir%/}${backup_suffix}"
+
+# remove original and restore from backup
+rm -rf -- "$testdir"
+cp -a -- "${testdir%/}${backup_suffix}" "$testdir"
+
+# verify
+if [[ -f "$testfile" ]]; then
+    echo "TEST_OK"
+    exit 0
+else
+    echo "TEST_FAIL"
+    exit 2
+fi
+REMOTE
+}
+
 # ----------------------------------------------------------------------------
 # INPUT VALIDATION
 # ----------------------------------------------------------------------------
@@ -270,8 +352,8 @@ if [[ ! -f "$folder_list_file" ]]; then
     exit 1
 fi
 
-if [[ "$operation" != "backup" && "$operation" != "restore" ]]; then
-    echo "Error: Operation must be 'backup' or 'restore'" >&2
+if [[ "$operation" != "backup" && "$operation" != "restore" && "$operation" != "create-test-folders-files" ]]; then
+    echo "Error: Operation must be 'backup', 'restore', or 'create-test-folders-files'" >&2
     print_usage
     exit 1
 fi
