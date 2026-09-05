@@ -87,14 +87,15 @@ read_list_entries() {
 
 print_usage() {
     cat <<EOF
-Usage: $SCRIPT_NAME [--dry-run] <server_list_file> <parent_folder_list_file> <backup|restore>
-    $SCRIPT_NAME [--dry-run] <server_list_file> <parent_folder_list_file> create-test-folders-files
+Usage: $SCRIPT_NAME [--dry-run] [--cleanup-backup] <server_list_file> <parent_folder_list_file> <backup|restore>
+    $SCRIPT_NAME [--dry-run] [--cleanup-backup] <server_list_file> <parent_folder_list_file> create-test-folders-files
     $SCRIPT_NAME -test <server_list_file>
        $SCRIPT_NAME --help
        $SCRIPT_NAME help
 
 Options:
   --dry-run              Show what would happen without making changes
+  --cleanup-backup       Compress the newest backup after creation and remove the uncompressed copy
   --help, -h, help      Show this help message
   server_list_file       File containing remote server names/addresses (one per line)
   parent_folder_list_file File containing folder paths to back up or restore (one per line)
@@ -103,6 +104,7 @@ Options:
 
 Examples:
   $SCRIPT_NAME servers.txt folders.txt backup
+  $SCRIPT_NAME --cleanup-backup servers.txt folders.txt backup
   $SCRIPT_NAME servers.txt folders.txt restore
   $SCRIPT_NAME --dry-run servers.txt folders.txt backup
     $SCRIPT_NAME servers.txt folders.txt create-test-folders-files
@@ -114,17 +116,22 @@ EOF
 remote_backup_folder() {
     local server="$1"
     local target_path="$2"
+    local cleanup_backup="${3:-false}"
 
     if [[ "$DRY_RUN" == true ]]; then
         log_message "DRY RUN: Would backup '$target_path' on $server"
+        if [[ "$cleanup_backup" == true ]]; then
+            log_message "DRY RUN: Would compress and remove uncompressed backup for '$target_path' on $server"
+        fi
         return 0
     fi
 
-    ssh "${SSH_OPTS[@]}" "$server" bash -s -- "$target_path" "$BACKUP_DIR_SUFFIX" <<'REMOTE'
+    ssh "${SSH_OPTS[@]}" "$server" bash -s -- "$target_path" "$BACKUP_DIR_SUFFIX" "$cleanup_backup" <<'REMOTE'
 set -Eeuo pipefail
 
 target_path="$1"
 backup_suffix="$2"
+cleanup_backup="$3"
 
 if [[ ! -e "$target_path" ]]; then
     echo "Error: Path '$target_path' does not exist on $(hostname)"
@@ -145,6 +152,14 @@ elif [[ -f "$target_path" ]]; then
 else
     echo "Error: Path '$target_path' is neither a file nor a directory on $(hostname)"
     exit 1
+fi
+
+if [[ "$cleanup_backup" == true ]]; then
+    archive_path="${backup_path}.tar.gz"
+    printf 'Compressing backup: %s\n' "$archive_path"
+    tar -czf -- "$archive_path" -C "$(dirname -- "$backup_path")" "$(basename -- "$backup_path")"
+    rm -rf -- "$backup_path"
+    printf 'Compressed backup created and uncompressed backup removed: %s\n' "$archive_path"
 fi
 
 printf 'Backup completed successfully on %s\n' "$(hostname)"
@@ -170,7 +185,12 @@ if [[ -d "$target_path" ]]; then
     entry_name="$(basename -- "$target_path")"
 
     shopt -s nullglob
-    mapfile -t backup_matches < <(find "$parent_dir" -mindepth 1 -maxdepth 1 -type d -name "${entry_name}_backup_*" -printf '%T@ %p\n' 2>/dev/null | sort -nr | cut -d' ' -f2-)
+    mapfile -t backup_matches < <(
+        {
+            find "$parent_dir" -mindepth 1 -maxdepth 1 -type d -name "${entry_name}_backup_*" -printf '%T@ %p\n' 2>/dev/null
+            find "$parent_dir" -mindepth 1 -maxdepth 1 -type f -name "${entry_name}_backup_*.tar.gz" -printf '%T@ %p\n' 2>/dev/null
+        } | sort -nr | cut -d' ' -f2-
+    )
 
     if [[ ${#backup_matches[@]} -eq 0 ]]; then
         echo "Error: No backup found for $target_path on $(hostname)"
@@ -185,13 +205,26 @@ if [[ -d "$target_path" ]]; then
     fi
 
     printf 'Restoring from: %s\n' "$backup_path"
-    cp -a -- "$backup_path" "$target_path"
+    if [[ "$backup_path" == *.tar.gz ]]; then
+        extract_dir="$(mktemp -d)"
+        tar -xzf -- "$backup_path" -C "$extract_dir"
+        extracted_item="$(find "$extract_dir" -mindepth 1 -maxdepth 1 | head -n 1)"
+        cp -a -- "$extracted_item" "$target_path"
+        rm -rf -- "$extract_dir"
+    else
+        cp -a -- "$backup_path" "$target_path"
+    fi
 elif [[ -f "$target_path" ]]; then
     parent_dir="$(dirname -- "$target_path")"
     entry_name="$(basename -- "$target_path")"
 
     shopt -s nullglob
-    mapfile -t backup_matches < <(find "$parent_dir" -mindepth 1 -maxdepth 1 -type f -name "${entry_name}_backup_*" -printf '%T@ %p\n' 2>/dev/null | sort -nr | cut -d' ' -f2-)
+    mapfile -t backup_matches < <(
+        {
+            find "$parent_dir" -mindepth 1 -maxdepth 1 -type f -name "${entry_name}_backup_*" -printf '%T@ %p\n' 2>/dev/null
+            find "$parent_dir" -mindepth 1 -maxdepth 1 -type f -name "${entry_name}_backup_*.tar.gz" -printf '%T@ %p\n' 2>/dev/null
+        } | sort -nr | cut -d' ' -f2-
+    )
 
     if [[ ${#backup_matches[@]} -eq 0 ]]; then
         echo "Error: No backup found for $target_path on $(hostname)"
@@ -206,7 +239,15 @@ elif [[ -f "$target_path" ]]; then
     fi
 
     printf 'Restoring from: %s\n' "$backup_path"
-    cp -a -- "$backup_path" "$target_path"
+    if [[ "$backup_path" == *.tar.gz ]]; then
+        extract_dir="$(mktemp -d)"
+        tar -xzf -- "$backup_path" -C "$extract_dir"
+        extracted_item="$(find "$extract_dir" -mindepth 1 -maxdepth 1 | head -n 1)"
+        cp -a -- "$extracted_item" "$target_path"
+        rm -rf -- "$extract_dir"
+    else
+        cp -a -- "$backup_path" "$target_path"
+    fi
 else
     echo "Error: Path '$target_path' is neither a file nor a directory on $(hostname)"
     exit 1
