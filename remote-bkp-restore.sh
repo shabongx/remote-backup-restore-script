@@ -296,6 +296,7 @@ REMOTE
 # INPUT VALIDATION
 # ----------------------------------------------------------------------------
 DRY_RUN=false
+TEST_MODE=false
 POSITIONAL_ARGS=()
 
 while (($#)); do
@@ -316,6 +317,10 @@ while (($#)); do
             DRY_RUN=true
             shift
             ;;
+        -test)
+            TEST_MODE=true
+            shift
+            ;;
         --)
             shift
             POSITIONAL_ARGS+=("$@")
@@ -332,6 +337,47 @@ while (($#)); do
             ;;
     esac
 done
+
+if [[ "$TEST_MODE" == true ]]; then
+    if [[ ${#POSITIONAL_ARGS[@]} -ne 1 ]]; then
+        print_usage
+        exit 1
+    fi
+
+    server_list_file="${POSITIONAL_ARGS[0]}"
+    if [[ ! -f "$server_list_file" ]]; then
+        echo "Error: Server list file '$server_list_file' not found" >&2
+        exit 1
+    fi
+
+    log_message "Starting SSH backup/restore test"
+    log_message "Servers file: $server_list_file"
+    if [[ "$DRY_RUN" == true ]]; then
+        log_message "Dry run enabled: no remote changes will be made"
+    fi
+
+    success_count=0
+    failure_count=0
+
+    mapfile -t servers < <(read_list_entries "$server_list_file")
+
+    for server in "${servers[@]}"; do
+        if remote_run_test_sequence "$server" >> "$LOG_FILE" 2>&1; then
+            ((success_count += 1))
+            log_message "SSH backup/restore test successful on $server"
+        else
+            ((failure_count += 1))
+            log_message "SSH backup/restore test failed on $server"
+        fi
+    done
+
+    log_message "========================================"
+    log_message "Test operation completed"
+    log_message "Successful operations: $success_count"
+    log_message "Failed operations: $failure_count"
+    log_message "Log file: $LOG_FILE"
+    exit 0
+fi
 
 if [[ ${#POSITIONAL_ARGS[@]} -ne 3 ]]; then
     print_usage
@@ -384,13 +430,21 @@ for server in "${servers[@]}"; do
                 ((failure_count += 1))
                 log_message "Backup failed for $server:$folder"
             fi
-        else
+        elif [[ "$operation" == "restore" ]]; then
             if remote_restore_folder "$server" "$folder" >> "$LOG_FILE" 2>&1; then
                 ((success_count += 1))
                 log_message "Restore successful for $server:$folder"
             else
                 ((failure_count += 1))
                 log_message "Restore failed for $server:$folder"
+            fi
+        else
+            if remote_create_test_folders_files "$server" "$folder" >> "$LOG_FILE" 2>&1; then
+                ((success_count += 1))
+                log_message "Test folders/files created successfully for $server:$folder"
+            else
+                ((failure_count += 1))
+                log_message "Test folders/files creation failed for $server:$folder"
             fi
         fi
     done
