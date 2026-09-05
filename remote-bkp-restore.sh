@@ -339,6 +339,7 @@ REMOTE
 DRY_RUN=false
 TEST_MODE=false
 POSITIONAL_ARGS=()
+CLEANUP_BACKUP=false
 
 while (($#)); do
     case "$1" in
@@ -356,6 +357,10 @@ while (($#)); do
             ;;
         -n|--dry-run)
             DRY_RUN=true
+            shift
+            ;;
+        --cleanup-backup)
+            CLEANUP_BACKUP=true
             shift
             ;;
         -test)
@@ -464,7 +469,7 @@ mapfile -t folders < <(read_list_entries "$folder_list_file")
 for server in "${servers[@]}"; do
     for folder in "${folders[@]}"; do
         if [[ "$operation" == "backup" ]]; then
-            if remote_backup_folder "$server" "$folder" >> "$LOG_FILE" 2>&1; then
+            if remote_backup_folder "$server" "$folder" "$CLEANUP_BACKUP" >> "$LOG_FILE" 2>&1; then
                 ((success_count += 1))
                 log_message "Backup successful for $server:$folder"
             else
