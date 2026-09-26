@@ -90,10 +90,12 @@ print_usage() {
 Usage: $SCRIPT_NAME [--dry-run] [--cleanup-backup] <server_list_file> <parent_folder_list_file> <backup|restore>
     $SCRIPT_NAME [--dry-run] [--cleanup-backup] <server_list_file> <parent_folder_list_file> create-test-folders-files
     $SCRIPT_NAME -test <server_list_file>
+    $SCRIPT_NAME --ui [port]
        $SCRIPT_NAME --help
        $SCRIPT_NAME help
 
 Options:
+  --ui, --web [port]     Start the local Web UI dashboard (default port: 8080)
   --dry-run              Show what would happen without making changes
   --cleanup-backup       Compress the newest backup after creation and remove the uncompressed copy
   --help, -h, help      Show this help message
@@ -366,6 +368,16 @@ while (($#)); do
         -test)
             TEST_MODE=true
             shift
+            ;;
+        --ui|--web)
+            shift
+            port="8080"
+            if [[ $# -gt 0 && "$1" =~ ^[0-9]+$ ]]; then
+                port="$1"
+                shift
+            fi
+            script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+            exec python3 "$script_dir/web_ui.py" "$port"
             ;;
         --)
             shift
